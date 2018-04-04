@@ -1,0 +1,1206 @@
+---
+title: "Analyze Baseball"
+author: "Armita Khajeh Nassiri"
+date: "December 4, 2017"
+output: html_document
+---
+
+Analyzing sports data can be really fun and amusing. Also, its results can help to improve a team’s overall result and help the instructors to better help their teams. Sports data analysis is also very helpful for sports commentator when commenting on the game and giving statistics.
+Lahman database for Baseball created by Sean Lahman contains pitching, hitting, and fielding statistics for Major League Baseball from 1871 through 2016. It includes data from the two current leagues (American and National), the four other "major" leagues (American Association, Union Association, Players League, and Federal League), and the National Association of 1871-1875. 
+The database is available in the R package Lahman and also on his own website:
+http://www.seanlahman.com/baseball-archive/statistics/
+
+We are going to work on this database and explore the amazing things happening throughout baseball history.
+
+The database consists of several different tables each of which contains a particular piece of information.
+
+
+
+```{r library, include=FALSE}
+library(Lahman)
+library(plyr)
+library(dplyr)
+library(knitr)
+```
+
+```{r load data, include=FALSE}
+data(Batting)
+head(Batting)
+require("dplyr")
+```
+
+
+Using the table "Batting" which contains batting statistics, we would be interested to see whether there is an association between a player's home run rate and his strikeout rate?
+we decide to perform our analysis for all batters with at least 5000 careers.
+
+
+```{r}
+#We want to compute the sum of AB over the seasons of a player’s career
+
+dataframe.AB <- ddply(Batting, .(playerID), summarize, Career.AB=sum(AB, na.rm=TRUE))
+
+#We add a new variable Career.AB to our original data frame
+
+Batting <- merge(Batting, dataframe.AB, by="playerID")
+
+#Then we will only choose season batting statistics for players with more than 5000 At Bats.
+
+Batting.5000 <- subset(Batting, Career.AB >= 5000)
+
+# For each player in the data farme we want to compute the career AB, career HR, and career SO
+
+ab.hr.so <- function(d){
+  c.AB <- sum(d$AB, na.rm=TRUE)
+  c.HR <- sum(d$HR, na.rm=TRUE)
+  c.SO <- sum(d$SO, na.rm=TRUE)
+  data.frame(AB=c.AB, HR=c.HR, SO=c.SO)
+}
+
+d.5000 <- ddply(Batting.5000, .(playerID), ab.hr.so)
+head(d.5000)
+
+
+#lo<- loess( d.5000$HR/d.5000$AB ~ d.5000$SO/d.5000$AB )
+with(d.5000, plot(HR/AB, SO/AB))
+with(d.5000, lines(lowess(HR/AB, SO/AB, f=2/3)))
+
+#The plot shows that home run rates and strikeout rates are corelated 
+
+```
+
+The goal of a Baseball team like all the other sports is winning the game. A team wins when it outscores its opponents. So the percentage of wins of a particular team is very much related to the number of runs it scores. We want to understand the relationship between runs(R: runs scored) and wins(W). 
+What we would like to know next is players' influence and contribution (the impact of players in terms of win).
+
+
+```{r}
+
+# we are interested in studying the realtionship between wins and runs for recent years for instance seasons since 2001
+
+myteams <- subset(Teams, yearID> 2000)[ , c("teamID", "yearID","lgID", "G", "W", "L", "R", "RA")]
+
+#we add run differential (RD) and Wpct (winning percentage) to our new table 
+
+myteams$RD<- with(myteams, R-RA)
+myteams$Wpct<- with(myteams, W/ (W+L))
+
+# as expected we can see a strong + relationship. Teams with large RD are more likely to win 
+
+plot(myteams$RD, myteams$Wpct,
+     xlab="run differential",
+     ylab="winning percentage")
+
+#we can fit a linear regression model:
+
+linfit <- lm(Wpct ~ RD, data=myteams)
+# we fit a straight line using abline with the coefficients of our model.
+abline(a=coef(linfit)[1], b=coef(linfit)[2], lwd=2)
+myteams$linWpct <- predict(linfit)
+myteams$linResiduals <- residuals(linfit)
+plot(myteams$RD, myteams$linResiduals,
+     xlab="run differential",
+     ylab="residual")
+abline(h=0, lty=3)
+# mean is almost zero, unbiased
+meanRe<-mean(myteams$linResiduals)
+meanRe
+#root mean squared error- error in prediction
+linRMSE <- sqrt(mean(myteams$linResiduals ^ 2))
+linRMSE
+
+#approximately 2/3 of data fall between -RMSE and +RMSE
+nrow(subset(myteams, abs(linResiduals) < linRMSE)) /nrow(myteams)
+
+# 95% of the data falls between -2* RMSE and +2* RMSE
+nrow(subset(myteams, abs(linResiduals) < 2 * linRMSE))/nrow(myteams)
+
+
+
+```
+
+
+Bill James, has derived another formula to estimate winning percentage which has some advantages over the previous formula discused:
+
+$$
+W_{pct}= \frac{R^2}{R^2+RA^2}
+$$
+This formula is called Pythagorean formula.
+
+In the year 2011, the Boston Red Sox scored 875 runs with a RA of 737. According to the Pythagorean formula, they were expected to win 95 games:
+$$
+W_{pct}= 162 \times \frac{875^2}{875^2+737^2}\approx 95
+$$
+
+But they actually won 90 games and the 5 games difference turned out to be really costly for Boston Red Sox. Why did they win five fewer games than expected from their run differential?
+
+For this reason, we look at the season game by game. Its data is available http://www.retrosheet.org/events by choosing the year 2011 and downloading its zip file. Here I have got the data right from the web by web scrapping.
+
+```{r}
+url <- "http://www.retrosheet.org/events/2011eve.zip"
+download.file(url, dest = "gl2011.zip", mode = "wb") 
+gl2011<- unzip("gl2011.zip", exdir = "./")
+gl2011 <- read.table("gl2011.txt", sep=",")
+```
+
+We will recalculate the winning percentage using the Pythagorean formula.
+
+```{r}
+myteams$pytWpct <- with(myteams, R ^ 2 / (R ^ 2 + RA ^ 2))
+
+myteams$pytResiduals <- myteams$Wpct - myteams$pytWpct
+
+#sqrt(mean(myteams$pytResiduals ^ 2))
+
+
+```
+
+
+
+```{r}
+glheaders <- read.csv("game_log_header.csv")
+names(gl2011) <- names(glheaders)
+BOS2011 <- subset(gl2011, HomeTeam=="BOS" | VisitingTeam=="BOS")[ , c("VisitingTeam", "HomeTeam", "VisitorRunsScored", "HomeRunsScore")]
+
+head(BOS2011)
+
+```
+
+Run differentials for every game Boston team has participated in is calculated and stored in Scorediff. 
+Column W is boolean and will store TRUE for the games won by Red Sox.
+
+
+
+```{r}
+BOS2011$ScoreDiff <- with(BOS2011, ifelse(HomeTeam == "BOS",
+  HomeRunsScore - VisitorRunsScored,
+  VisitorRunsScored - HomeRunsScore))
+BOS2011$W <- BOS2011$ScoreDiff > 0
+Summary_scorediff<-aggregate(abs(BOS2011$ScoreDiff), list(W=BOS2011$W), summary)
+
+Summary_scorediff
+
+```
+
+As it can be seen, the Red Sox team, had victories by a larger margin than their losses. (4.30 vs 3.45). This has led to their underperformance of the Pythagorean prediction by five games.
+A team can overperform its Pythagorean winning percentage by winning a disproportionate number of close games.
+
+To discuss it further, from our gl2011 table, we create a table named results containing the name of teams and their results.
+Two new columns are added: winner- contains the winning team and diff: contains the margin of victory.
+
+```{r}
+
+results <- gl2011[,c("VisitingTeam", "HomeTeam","VisitorRunsScored", "HomeRunsScore")]
+results$winner <- ifelse(results$HomeRunsScore >
+   results$VisitorRunsScored, as.character(results$HomeTeam),
+   as.character(results$VisitingTeam))
+results$diff <- abs(results$VisitorRunsScored- results$HomeRunsScore)
+
+```
+
+We then focus on games won by only one run difference. 
+
+
+```{r}
+onerungames<- subset(results, diff==1)
+
+#the table function is used to count the number of wins for each team
+onerunwins <- as.data.frame(table(onerungames$winner))
+names(onerunwins) <- c("teamID", "onerunW")
+
+```
+
+
+Using myteams data frame previously created, we look at the relation between the Pythagorean residuals and the number of one-run victories.
+Note: Team abbreviation for Angels is not the same in Lahman’s database(LAA) and in the Retrosheet game logs (“ANA”). So the change must be made.
+
+
+```{r}
+
+teams2011 <- subset(myteams, yearID == 2011)
+teams2011[teams2011$teamID == "LAA", "teamID"] <- "ANA"
+teams2011 <- merge(teams2011, onerunwins)
+plot(teams2011$onerunW, teams2011$pytResiduals,
+     xlab="one run wins",
+     ylab="Pythagorean residuals")
+
+
+#identify(teams2011$onerunW, teams2011$pytResiduals, labels=teams2011$teamID)
+
+
+```
+
+
+There are teams with a large number of one-run victories and a large positive Pythagorean residual (top right) And in contrast, teams that had few one-run victories and a negative residual. We can probably say that those in the first category, have had more LUCK and that their wins can be associated with a bit of good luck but those in the second category have been a bit unlucky.
+
+
+
+
+Now we will focus on a baseball player whose data is available in "Cabrera " dataset. It features PITCHf/x batting data for five seasons of Miguel Cabrera’s career. 
+
+swung: indicates whether the batter attempted a swing on the pitch (coded 1 in case of an attempt and 0 otherwise)
+hit outcome: is an indicator of the result of the at-bat
+O (out), H (base hit), or E (batter reaching on an error).
+
+```{r}
+
+load("data/balls_strikes_count.Rdata")
+
+sampleRows <- sample(1:nrow(verlander), 20)
+verlander[sampleRows,]
+```
+
+```{r}
+
+data2011 <- read.csv("all2011.csv", header=FALSE)
+fields <- read.csv("fields.csv")
+names(data2011) <- fields[, "Header"]
+```
+
+```{r}
+#just to see what data is like we show 20 random rows.
+sampleRows <- sample(1:nrow(cabrera), 20)
+cabrera[sampleRows,]
+
+
+```
+
+We are quite interested in constructing a graph of locations of the balls hit by Cabrera.We will use ggplot2 package to continue towards our motivation.
+
+
+```{r}
+library(ggplot2)
+p0 <- ggplot(data=cabrera, aes(x=hitx, y=hity))
+p1 <- p0+ geom_point()
+p1
+```
+
+By assigning the variable hit outcome to the color aesthetic in the ggplot function, we can view whether a batted ball resulted in a bat hit(H), an out (O), an error(E).
+
+```{r}
+p0 <- ggplot(data=cabrera, aes(hitx, hity))
+p1 <- p0 + geom_point(aes(color=hit_outcome))
+#coord_equal ensures the units are equally scaled on the x and y axis (both measured in feet for instance)
+
+p2 <- p1 + coord_equal()
+p2
+
+# Different panels created as facets. Here on season
+p3<- p2 + facet_wrap(~ season)
+p3
+
+```
+
+
+We can add elements such as base path to our graph. Home plate is set to be in the origin. 
+
+
+```{r}
+bases <- data.frame(x=c(0, 90/sqrt(2), 0, -90/sqrt(2), 0),
+               y=c(0, 90/sqrt(2), 2 * 90/sqrt(2), 90/sqrt(2), 0)
+)
+
+#geom_path() connects the observations in the order in which they appear in the data
+p4 <- p3 + geom_path(aes(x=x, y=y), data=bases)
+
+
+#geom_segment draws a straght line between points (x, y ) and (xend, yend)
+
+p4 +
+  geom_segment(x=0, xend=300, y=0, yend=300) +
+  geom_segment(x=0, xend=-300, y=0, yend=300)
+
+```
+
+We can combine several different pieces of information and show them all on a single plot. Here we will use:
+batted ball outcome (Hit or Out) using shapes
+Pitch Speed using Size
+Pitch Type (levels(cabrera$pitch_type))
+
+
+
+```{r}
+cabrera2012 <- subset(cabrera, gamedate > "2012-08-31")
+cabrera2012 %>% ggplot(aes(hitx, hity)) + geom_point(aes(shape=hit_outcome, colour=pitch_type,
+                           size=speed)) +
+    coord_equal()+
+     geom_path(aes(x=x, y=y), data=bases) +
+    guides(col=guide_legend(ncol=2)) +
+geom_segment(x=0, xend=300, y=0, yend=300) +
+  geom_segment(x=0, xend=-300, y=0, yend=300)
+
+```
+
+##Beta Distribution: representing a probabilistic distribution of probabilities!!!
+
+
+We know that batting average is simply the number of times a player gets a base hit divided by the number of times he goes up at bat (so it’s just a percentage between 0 and 1). .266 is in general considered an average batting average, while .300 is considered an excellent one.
+
+Imagine we have a baseball player, and we want to predict what his season-long batting average will be.We can just agree on using his batting average so far- but this will be a very poor measure at the start of a season! But Why?
+
+Why is your batting average in the first few hits not a good predictor of your eventual batting average? Because we’re going in with prior expectations. We know that in history, most batting averages over a season have hovered between something like .215 and .360, with some extremely rare exceptions on either side.
+
+
+We expect that the player’s season-long batting average will be most likely around .27, but that it could reasonably range from .21 to .35. This can be represented with a beta distribution with parameters $$\alpha=81$$ and $$\beta=219$$:
+The mean is $$\frac{\alpha}{\alpha+\beta}=\frac{81}{81+219}=.270$$
+
+we can plot the beta distribution where the x-axis is (batting average)
+and the y axis is a probability (or more precisely a probability density). But actually, the x-axis is as well a probability (batting average is just a probability of a hit, after all)!
+
+Then we can use the beta distribution to represent our prior expectations, and update based on the new evidence. Move a little with each result.The new beta distribution will be:
+
+$$\mbox{Beta}(\alpha_0+\mbox{hits}, \beta_0+\mbox{misses})$$
+
+Thus, the beta distribution is best for representing a probabilistic distribution of probabilities- the case where we don't know what a probability is in advance, but we have some reasonable guesses.
+
+
+
+
+
+
+
+
+
+
+##Understanding empirical Bayes estimation:
+
+Which of these two proportions is higher: 4 out of 10, or 300 out of 1000? Silly question? Not really.
+
+suppose you were a baseball recruiter, trying to decide which of two potential players is a better batter based on how many hits they get. One has achieved 4 hits in 10 chances, the other 300 hits in 1000 chances.
+
+While the first player has a higher proportion of hits, it’s not a lot of evidence: a typical player tends to achieve a hit around 27% of the time, and this player’s 4/10 could be due to luck. The second player, on the other hand, has a lot of evidence that he’s an above-average batter.
+
+
+When we think and work with pairs of success/total as it is in our case, we may get tripped up by the uncertainty in low counts.
+$\frac{1}{2}$ does not mean the same thing as $\frac{50}{100}$; nor does $\frac{0}{1}$ mean the same thing as $\frac{0}{1000}$
+
+
+We just explained that using the beta distribution to represent your prior expectations, and updating based on the new evidence, can help make your estimate more accurate and practical.
+Now we’ll demonstrate the related method of empirical Bayes estimation, where the beta distribution is used to improve a large set of estimates.
+
+We'll apply empirical Bayes estimation to a baseball dataset, with the goal of improving our estimate of each player’s batting average. 
+
+```{r}
+library(tidyr)
+```
+
+```{r}
+
+career <- Batting %>%
+  filter(AB > 0) %>%
+  anti_join(Pitching, by = "playerID") %>%
+  group_by(playerID) %>%
+  summarize(H = sum(H), AB = sum(AB)) %>%
+  mutate(average = H / AB)
+#filter out pitchers who are generally the worst batters. 
+
+
+# use names along with the player IDs- unite the first name and last name.
+career <- Master %>%
+  tbl_df() %>%
+  select(playerID, nameFirst, nameLast) %>%
+  unite(name, nameFirst, nameLast, sep = " ") %>%  
+  inner_join(career, by = "playerID") %>%
+  select(-playerID)
+```
+
+Who are the best batters is history? Look at the highest batting average.
+
+
+```{r}
+career %>%
+  arrange(desc(average)) %>%
+  head(5) %>%
+  kable()
+
+#kable() is a very simple table generator. It is simple by design.
+```
+
+These aren't the best batters!! they're just the batters who went up once or twice and got lucky. How about the worst batters?
+
+```{r}
+
+career %>%
+  arrange(average) %>%
+  head(5) %>%
+  kable()
+
+```
+
+So this is not what we expected and looked for either. Mean is not the perfect estimate. What should we do?
+
+First, let's look at the distribution of batting averages across players who have had at least 500 at-bats.
+
+
+
+```{r}
+career %>%
+    filter(AB >= 500) %>%
+    ggplot(aes(average)) +
+    geom_histogram(binwidth = .005)
+
+```
+
+
+A beta distribution looks like a pretty appropriate choice based on the above histogram. 
+$$X\sim\mbox{Beta}(\alpha_0,\beta_0)$$
+
+So now we have to choose a reasonable $\alpha_0$ and $\beta_0$ which are called the hyper parameters. We will use the fitdistr function from MASS to probability distribution to the data. 
+
+```{r}
+career_filtered <- career %>%
+    filter(AB >= 500)
+
+m <- MASS::fitdistr(career_filtered$average, dbeta,
+                    start = list(shape1 = 1, shape2 = 10))
+
+alpha0 <- m$estimate[1]
+beta0 <- m$estimate[2]
+
+```
+
+We plot the probability distribution with hyper parameters $\alpha_0$ and $$beta_0$$ to data.
+
+
+```{r}
+
+ggplot(career_filtered) +
+  geom_histogram(aes(average, y = ..density..), binwidth = .005) +
+  stat_function(fun = function(x) dbeta(x, alpha0, beta0), color = "red",
+                size = 1) +
+  xlab("Batting average")
+
+```
+
+Now when we look at any individual to estimate their batting average, we'll start with our overall prior, and update based on the individual evidence. It's as simple as adding $\alpha_0$ to the number of hits, and $\alpha_0 + \beta_0$ to the total number of at-bats.
+
+
+Thus using this formula, even though $\frac{4}{10}>\frac{300}{1000}$, we would guess that the $\frac{300}{1000}$ batter is better than the $$\frac{4}{10}$$ batter!
+ 
+ 
+
+
+```{r}
+#For all batters
+
+career_eb <- career %>%
+    mutate(eb_estimate = (H + alpha0) / (AB + alpha0 + beta0))
+
+
+```
+ 
+Now we can ask these questions again:
+Who is the best batter?
+
+
+```{r}
+options(digits = 3)
+career_eb %>%
+  arrange(desc(eb_estimate)) %>%
+  head(5) %>%
+  kable()
+options(digits = 1)
+```
+
+
+Who is the worst batter?
+
+```{r}
+options(digits = 3)
+career_eb %>%
+  arrange(eb_estimate) %>%
+  head(5) %>%
+  kable()
+options(digits = 1)
+
+
+```
+
+
+Overall, now let's see how empirical Bayes changed all of the batting average estimates:
+
+
+```{r}
+
+ggplot(career_eb, aes(average, eb_estimate, color = AB)) +
+  geom_hline(yintercept = alpha0 / (alpha0 + beta0), color = "red", lty = 2) +
+  geom_point() +
+  geom_abline(color = "red") +
+  scale_colour_gradient(trans = "log", breaks = 10 ^ (1:5)) +
+  xlab("Batting average") +
+  ylab("Empirical Bayes batting average")
+
+
+```
+The horizontal dashed red line marks 
+$$y=\frac{\alpha_0}{\alpha_0 + \beta_0} $$
+We can see that points that lie close to the straight line($x=y$) are the ones that didn't get shrunk at all by empirical Bayes. Notice that they're the ones with the highest number of at-bats (the brightest blue): they have enough evidence that we're willing to believe the naive batting average estimate.
+
+How can we make this more complicated?
+
+We have assumed that all batting averages are drawn from a single distribution. In reality, we'd expect that it depends on some known factors. For instance, the distribution of batting averages has changed over time:
+So we can consider estimating a different Beta prior for each decade
+
+
+```{r}
+
+batting_by_decade <- Batting %>%
+  filter(AB > 0) %>%
+  group_by(playerID, Decade = round(yearID - 5, -1)) %>%
+  summarize(H = sum(H), AB = sum(AB)) %>%
+  ungroup() %>%
+  filter(AB > 500) %>%
+  mutate(average = H / AB)
+
+ggplot(batting_by_decade, aes(factor(Decade), average)) +
+  geom_boxplot() +
+  xlab("Decade") +
+  ylab("Batting average")
+
+
+```
+
+
+
+
+Sometimes rather than wanting to estimate a value, we look to answer a yes or no question about each hypothesis and thus classify them into two groups. For example for constructing a hall of fame, we want to include all players that have a batting probability (chance of getting a hit) greater than .300. We need a principled approach to decide which players are worth including and that players don't get in just by luck. We will try to apply a method called false discovery rate control.
+
+
+
+Consider a legendary player like Hank Aaron. His career batting average is 0.3050, but we’re basing our hall on his “true probability” of hitting. Should he be permitted in the >.300 Hall of Fame?
+
+When Aaron’s batting average is shrunken by empirical Bayes, we get an estimate of 0.3039. We thus suspect that his true probability of hitting is higher than .300, but we’re not necessarily certain. 
+
+
+
+```{r}
+
+#options(digits = 3)
+
+career_eb<- career_eb %>%  mutate(alpha1 = H + alpha0,
+           beta1 = AB - H + beta0)
+
+career_eb %>% filter(name == "Hank Aaron")
+
+
+```
+```{r}
+#pbeta is for the distribution function.
+
+pbeta(.3, 3850, 8819)
+```
+
+This probability that he doesn’t belong in the Hall of Fame is called the Posterior Error Probability. 
+We can calculate the PEP for every player:
+
+```{r}
+career_eb <- career_eb %>%
+    mutate(PEP = pbeta(.3, alpha1, beta1))
+```
+
+The distribution of PEP across the players is very interesting to investigate.
+
+
+
+```{r}
+
+
+ggplot(career_eb, aes(PEP)) +
+    geom_histogram(binwidth = .02) +
+    xlab("Posterior Error Probability (PEP)") +
+    xlim(0, 1)
+
+```
+
+
+Unsurprisingly, for most players, it's almost certain that they don't belong in the hall of fame: we know that their batting averages are below .300 and if they were included in the hall of fame, it would have been out of error.
+Close to 0 are the rare proud players who almost certainly belong to the hall of fame.
+
+It is very logical and can be seen that PEP is closely related to the estimated batting average:
+
+```{r}
+
+career_eb %>%  ggplot(aes(eb_estimate, PEP, color = AB)) +
+    geom_point(size = 1) +
+    xlab("(Shrunken) batting average estimate") +
+    ylab("Posterior Error Probability (PEP)") +
+    geom_vline(color = "red", lty = 2, xintercept = .3) +
+    scale_colour_gradient(trans = "log", breaks = 10 ^ (1:5))
+
+
+
+
+```
+
+To have a PEP less than 50%, you need to have a shrunken batting 
+average greater than 0.300.
+The relationship between the number of at-bats (the amount of evidence) and the PEP is very interesting.
+
+If a player’s shrunken batting average is .28, but he hasn’t batted many times, it is still possible his true batting average is above .3- the credible interval is wide. However, if the player with .28 has a high AB (light blue), the credible interval becomes thinner, we become confident that the true probability of hitting is under .3, and the PEP goes up to 1.
+
+
+We want to set a criterion (false discovery rate control) that includes as many players as possible while ensuring that no more than 5% of the Hall of Fame was mistakenly included.
+
+
+
+
+```{r}
+top_players <- career_eb %>%
+    arrange(PEP) %>%
+    head(100)
+
+```
+
+We know the PEP of each of these 100 players, which is the probability that that individual player is a false positive. And by the property of linearity of expected value, we can just add up these probabilities to get the expected value (the average) of the total number of false positives.
+
+
+```{r}
+sum(top_players$PEP)
+```
+
+This means that of these 100 players, we expect that about five of them are false discoveries.
+
+We can experiment with many thresholds to get our desired result. We can use the cummean function from dplyr:
+
+```{r}
+
+career_eb <- career_eb %>%
+    arrange(PEP) %>%
+    mutate(qvalue = cummean(PEP))
+
+```
+
+
+```{r}
+hall_of_fame <- career_eb %>%
+    filter(qvalue < .05)
+
+nrow(hall_of_fame)
+
+#if we wanted to be more carefull
+strict_hall_of_fame <- career_eb %>%
+    filter(qvalue < .01)
+
+nrow(strict_hall_of_fame)
+
+```
+
+
+It's useful to look at how many players would be included at various thresholds:
+
+```{r}
+
+career_eb %>%
+    filter(qvalue < .25) %>%
+    ggplot(aes(qvalue, rank(PEP))) +
+    geom_line() +
+    xlab("q-value cutoff") +
+    ylab("Number of players included")
+
+
+```
+
+So thus far we have used empirical Bayes method to estimate batting averages of baseball players. But there’s a complication with this approach. When players are better, they are given more chances to bat!  
+
+That means there’s a relationship between the number of at-bats (AB) and the true batting average. 
+We will try to change our model using a method called beta-binomial regression.
+
+A brief summary of what we have done:
+
+```{r}
+
+# Grab career batting average of non-pitchers
+# (allow players that have pitched <= 3 games, like Ty Cobb)
+pitchers <- Pitching %>%
+  group_by(playerID) %>%
+  summarize(gamesPitched = sum(G)) %>%
+  filter(gamesPitched > 3)
+
+career <- Batting %>%
+  filter(AB > 0) %>%
+  anti_join(pitchers, by = "playerID") %>%
+  group_by(playerID) %>%
+  summarize(H = sum(H), AB = sum(AB)) %>%
+  mutate(average = H / AB)
+
+# Add player names
+career <- Master %>%
+  tbl_df() %>%
+  dplyr::select(playerID, nameFirst, nameLast) %>%
+  unite(name, nameFirst, nameLast, sep = " ") %>%
+  inner_join(career, by = "playerID")
+
+# Estimate hyperparameters alpha0 and beta0 for empirical Bayes
+career_filtered <- career %>% filter(AB >= 500)
+m <- MASS::fitdistr(career_filtered$average, dbeta,
+                    start = list(shape1 = 1, shape2 = 10))
+
+alpha0 <- m$estimate[1]
+beta0 <- m$estimate[2]
+prior_mu <- alpha0 / (alpha0 + beta0)
+
+# For each player, update the beta prior based on the evidence
+# to get posterior parameters alpha1 and beta1
+career_eb <- career %>%
+  mutate(eb_estimate = (H + alpha0) / (AB + alpha0 + beta0)) %>%
+  mutate(alpha1 = H + alpha0,
+         beta1 = AB - H + beta0) %>%
+  arrange(desc(eb_estimate))
+
+
+
+```
+
+Let’s compare at-bats (on a log scale) to the raw batting average:
+
+
+```{r}
+career %>%
+  filter(AB >= 20) %>%
+  ggplot(aes(AB, average)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_x_log10()
+
+```
+
+
+We can see that batters with low ABs have more variance in our estimates- that’s a familiar pattern because we have less information about them. 
+But, it can also be seen that as the number of at-bats increases, the batting average also increases. Unlike the variance, this is not an artifact of our measurement: it’s a result of the choices of baseball managers! Better batters get played more.
+
+
+
+
+```{r}
+career_eb %>%
+  filter(AB >= 20) %>%
+  gather(type, value, average, eb_estimate) %>%
+  mutate(type = plyr::revalue(type, c(average = "Raw",
+                                      eb_estimate = "With EB Shrinkage"))) %>%
+  ggplot(aes(AB, value)) +
+  geom_point() +
+  scale_x_log10() +
+  geom_hline(color = "red", lty = 2, size = 1.5, yintercept = prior_mu) +
+  facet_wrap(~type) +
+  ylab("average") +
+    geom_smooth(method = "lm")
+```
+
+```{r}
+median_lt_20 <- career_eb %>%
+  filter(AB >= 5, AB <= 20) %>%
+  summarize(average = median(H / AB))
+
+median_lt_20
+```
+That horizontal red line shows the prior mean that we're "shrinking" towards ($\frac{\alpha_0}{\alpha_0 + \beta_0} = 0.2588$).
+This value is too high for the low AB players. 
+
+For example, the median batting average for players with 5-20 at-bats is 0.166, and they get shrunk way towards the overall average! The high-AB crowd basically stays where they are, because each has a lot of evidence.
+
+So since low-AB batters are getting overestimated, and high-AB batters are staying where they are, we’re working with a biased estimate that is systematically overestimating batter ability.
+
+
+
+
+So how can we fix the model?
+We want the typical batting average to be linearly affected by log(AB).
+
+We simply define $\mu$ so that it includes log(AB) as a linear term:
+
+$$\mu_i = \mu_0 + \mu_{\mbox{AB}} \cdot \log(\mbox{AB})$$
+
+$$\alpha_{0,i} = \mu_i / \sigma_0$$
+
+$$\beta_{0,i} = (1 - \mu_i) / \sigma_0$$
+
+This particular model is called beta-binomial regression. We can use "gamlss" package for fitting beta-binomial regression using maximum likelihood.
+
+```{r}
+
+library(gamlss)
+
+fit <- gamlss(cbind(H, AB - H) ~ log(AB),
+              data = career_eb,
+              family = BB(mu.link = "identity"))
+```
+
+We can pull out the coefficients with the broom package.
+
+```{r}
+library(broom)
+
+td <- tidy(fit)
+td
+
+```
+
+This gives us our three parameters: $\mu_0 = 0.143$, $\mu_\mbox{AB} = 0.01$, and (since sigma has a log-link) $\sigma_0 = \exp(-6.29)= 0.002$.
+
+Now we can calculate $\alpha_0$ and $\beta_0$ parameters for each player, according to $\alpha_{0,i}=\mu_i / \sigma_0$ and $\beta_{0,i}=(1-\mu_i) / \sigma_0$. From that, we can update based on $H$ and $AB$ to calculate new $\alpha_{1,i}$ and $\beta_{1,i}$ for each player.
+
+
+```{r}
+
+mu <- fitted(fit, parameter = "mu")
+sigma <- fitted(fit, parameter = "sigma")
+
+head(mu)
+head(sigma)
+
+career_eb_wAB <- career_eb %>%
+  dplyr::select(name, H, AB, original_eb = eb_estimate) %>%
+  mutate(mu = mu,
+         alpha0 = mu / sigma,
+         beta0 = (1 - mu) / sigma,
+         alpha1 = alpha0 + H,
+         beta1 = beta0 + AB - H,
+         new_eb = alpha1 / (alpha1 + beta1))
+```
+
+
+```{r}
+library(tidyr)
+
+lev <- c(raw = "Raw H / AB", original_eb = "EB Estimate", new_eb = "EB w/ Regression")
+
+career_eb_wAB %>%
+  filter(AB >= 10) %>%
+  mutate(raw = H / AB) %>%
+  gather(type, value, raw, original_eb, new_eb) %>%
+  mutate(mu = ifelse(type == "original_eb", prior_mu,
+                     ifelse(type == "new_eb", mu, NA))) %>%
+  mutate(type = factor(plyr::revalue(type, lev), lev)) %>%
+  ggplot(aes(AB, value)) +
+  geom_point() +
+  geom_line(aes(y = mu), color = "red") +
+  scale_x_log10() +
+  facet_wrap(~type) +
+  xlab("At-Bats (AB)") +
+  ylab("Estimate")
+
+```
+
+
+
+ We used to shrink batters towards the overall average (red line), but now we are shrinking them towards the overall trend- that red slope.
+ 
+ 
+ 
+##ebbr package: A package for performing empirical Bayes on binomial data. 
+
+All that we have done, can be done using the package ebbr. We will try to do the exact same things using this package.
+
+We wanted to estimate the beta prior to the overall dataset, which is the first step of empirical Bayes analysis. The ebb_fit_prior function encapsulates this, taking the data along with the success/total columns and fitting the beta through maximum likelihood.
+
+
+```{r}
+
+ library(ebbr)
+
+prior <- career %>%
+  filter(AB >= 500) %>%
+  ebb_fit_prior(H, AB)
+ prior
+```
+
+The second step of empirical Bayes analysis is updating each observation based on the overall statistical model.This is achieved with the augment function:
+
+```{r}
+augment(prior, data = career)
+
+```
+
+
+
+
+We examined how this beta-binomial model may not be appropriate, because of the relationship between a player’s at-bats and their batting average. Good batters tend to have long careers, while poor batters may retire quickly.
+
+```{r}
+ career %>%
+  filter(AB >= 10) %>%
+  ggplot(aes(AB, H / AB)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  scale_x_log10()
+```
+
+We solved this by fitting a prior that depended on AB, through beta-binomial regression. The add_ebb_estimate function offers this option, by setting method = "gamlss" and providing a formula to mu_predictors.
+
+```{r}
+eb_career_ab <- career %>%
+  add_ebb_estimate(H, AB, method = "gamlss",
+                    mu_predictors = ~ log10(AB))
+
+eb_career_ab
+
+```
+
+
+The other parameters, such as .fitted and the credible interval, are now shrinking towards a trend rather than towards a constant. We can see this by plotting AB against the original and the shrunken estimates:
+
+```{r}
+eb_career_ab %>%
+  filter(AB > 10) %>%
+  rename(Raw = .raw, Shrunken = .fitted) %>%
+  gather(type, estimate, Raw, Shrunken) %>%
+  ggplot(aes(AB, estimate)) +
+  geom_point() +
+  facet_wrap(~ type) +
+  scale_x_log10()
+```
+
+Having the posterior estimates for each player lets us explore the model results using our normal tidy tools like dplyr and ggplot2. For example, we could visualize how batting averages were shrunken towards the mean of the prior:
+
+
+```{r}
+eb_career <- career %>%
+  add_ebb_estimate(H, AB, prior_subset = AB >= 500)
+
+eb_career
+```
+
+
+```{r}
+eb_career %>% ggplot(aes(.raw, .fitted, color = AB)) +
+  geom_point() +
+  geom_abline(color = "red") +
+  scale_color_continuous(trans = "log", breaks = c(1, 10, 100, 1000)) +
+  geom_hline(yintercept = tidy(prior)$mean, color = "red", lty = 2) +
+  labs(x = "Raw batting average",
+       y = "Shrunken batting average")
+
+
+```
+
+We examined how this beta-binomial model may not be appropriate, because of the relationship between a player’s at-bats and their batting average. Good batters tend to have long careers, while poor batters may retire quickly.
+
+```{r}
+ career %>%
+  filter(AB >= 10) %>%
+  ggplot(aes(AB, H / AB)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  scale_x_log10()
+
+```
+
+We solved this by fitting a prior that depended on AB, through beta-binomial regression. The add_ebb_estimate function offers this option, by setting method = "gamlss" and providing a formula to mu_predictors.
+
+```{r}
+eb_career_ab <- career %>%
+  add_ebb_estimate(H, AB, method = "gamlss",
+                    mu_predictors = ~ log10(AB))
+
+eb_career_ab
+
+
+```
+
+The other parameters, such as .fitted and the credible interval, are now shrinking towards a trend rather than towards a constant. We can see this by plotting AB against the original and the shrunken estimates:
+
+```{r}
+eb_career_ab %>%
+  filter(AB > 10) %>%
+  rename(Raw = .raw, Shrunken = .fitted) %>%
+  gather(type, estimate, Raw, Shrunken) %>%
+  ggplot(aes(AB, estimate)) +
+  geom_point() +
+  facet_wrap(~ type) +
+  scale_x_log10()
+```
+
+
+
+
+
+
+
+## Analysis of career performance in top home run hitters
+
+Trying to project future performance of players is relevant to many in the profession, specifically, a team manager negotiating a multi-year contract and a player's agent. If we consider a player requesting a long-term contract who is 8 years in the league and has been a top home run hitter for a couple of years. How do we project his performance 5-10 years hence?
+
+minimum and maximum batting :
+
+```{r, echo = TRUE}
+min(Batting$year)
+max(Batting$year)
+```
+
+
+Being a Hall of Fame player is based on a whole career of performance. The data are given per year and per player. To get career-long home run statistics we need to group the data by player and analyze total statistics for each player's sub-data.frame.
+
+```{r, echo = TRUE}       
+hr_stats_df <- ddply(Batting, .(playerID), function(df)
+  c(mean(df$HR, na.rm = T), 
+    max(df$HR, na.rm = T), sum(df$HR, na.rm = T), nrow(df)))
+```
+
+
+```{r, echo = FALSE}       
+nrow(hr_stats_df)
+```
+
+```{r, echo = TRUE}       
+names(hr_stats_df)[c(2, 3, 4, 5)] <- c("HR.mean",
+                                       "HR.max",
+                                       "HR.total", "career.length")
+
+```
+
+
+Our player of interest has been around for 8 years and imagine that he is requesting a multi-year contract, so we will restrict our attention to players that were in the league for at least 10 years.
+
+```{r, echo = TRUE}       
+hr_stats_long_df <- subset(hr_stats_df, career.length >= 10)
+
+```
+
+
+```{r, echo = TRUE}       
+Batting_hr <- merge(Batting, hr_stats_long_df)
+```
+
+##
+In order to analyze how players perform over their careers using this yearly data we need to know which career-year a given year's record corresponds to. Let's look at one player and define a new variable that indicates this. Babe Ruth has playerID "ruthba01".
+
+```{r, echo = TRUE}       
+ruth_df <- subset(Batting_hr, playerID == "ruthba01")
+min(ruth_df$yearID)
+ruth_df2 <- transform(ruth_df, career.year = yearID - min(yearID) + 1)
+
+```
+
+To do this uniformly for all players we use ddply to group the data by player, we add the career.year variable calculated for this player, then join all the data.frames together into one.
+
+
+```{r, echo = TRUE}
+Batting_hr_cy <- ddply(Batting_hr, .(playerID), 
+                       function(df) transform(df, career.year = 
+                                                yearID - 
+    min(yearID) + 1))
+##head(Batting_hr_cy, n = 2)
+```
+
+
+To get deeper information about top career players it'll be helpful to analyze the most recent players and Hall of Fame players from the past. To this end, we'll segregate players that started before 1940 from those that started after 1950. This requires tagging each player with the starting year. We'll add a column to the data.frame with this information as follows.
+
+```{r, echo = TRUE}
+start_year_df <- ddply(Batting_hr_cy, .(playerID),
+                       function(df) min(df$yearID))
+head(start_year_df)
+```
+
+
+```{r, echo = TRUE}
+names(start_year_df)[2] <- "start.year"
+# Merge this with other data.
+Batting_hr_cy2 <- merge(Batting_hr_cy, start_year_df)
+```
+
+Now we select subframes of players with separate starting years.
+
+```{r, echo = TRUE}
+Batting_early <- subset(Batting_hr_cy2, start.year < 1940)
+Batting_late <- subset(Batting_hr_cy2, start.year > 1950)
+```
+
+Select players with most home runs in both groups:
+
+Let's get the top 10 home run hitters in the early group and the late group. We could order our Batting data.frames by total home runs, but we'd have lots of rows for each player (one for each year played). It's simpler to form a new dataframe that just has the total home runs per player.
+
+```{r, echo = TRUE}
+tot_HR_early <- subset(Batting_early, select = c(playerID, HR.total))
+head(tot_HR_early, n = 2)
+```
+
+
+```{r, echo=TRUE}
+#Remove the duplicate rows:
+
+tot_HR_early <- unique(tot_HR_early)
+head(tot_HR_early, n = 3)
+```
+
+Now we want to sort this data.frame by total homeruns in descending order. 
+
+```{r, echo=TRUE}
+
+#The plyr package provides a nice function to do this, called arrange.
+tot_HR_early_srt <- arrange(tot_HR_early, desc(HR.total))
+```
+
+```{r, echo=TRUE}
+head(tot_HR_early_srt, n = 5)
+top10_HR_hitters_early <- tot_HR_early_srt[1:10, "playerID"]
+```
+
+
+Now repeat this for the later players.
+
+```{r,echo=TRUE}
+tot_HR_late <- subset(Batting_late, select = c(playerID, HR.total))
+# Remove the duplicate rows:
+tot_HR_late <- unique(tot_HR_late)
+tot_HR_late_srt <- arrange(tot_HR_late, desc(HR.total))
+head(tot_HR_late_srt, n = 3)
+top10_HR_hitters_late <- tot_HR_late_srt[1:10, "playerID"]
+
+```
+
+Analyze the career power features for early players:
+
+First restrict the Batting data to these players.
+```{r, echo=TRUE}
+Batting_early_top10 <- subset(Batting_early
+                              , playerID %in% 
+                                top10_HR_hitters_early)
+
+```
+
+To get a sense of how home run performance varies over the career, let's just plot that data. To exclude any anomalies due to time injured and not playing we'll plot the ratio of home runs over at bats per year instead of the raw home run numbers.
+
+
+
+To begin, we plot this for willite01.
+
+```{r, echo=TRUE}
+ggplot(data = subset(Batting_early_top10, playerID == "willite01"),
+       aes(x = career.year, 
+    y = HR/AB)) + geom_point()
+```
+
+
+We can get a view of the performance of all ten players using a facet plot.
+
+```{r, echo=TRUE}
+ggplot(data = Batting_early_top10, aes(x = career.year, 
+                                       y = HR/AB))+ geom_point() + 
+    facet_wrap(~playerID, ncol = 3)
+```
+
+We can get a sense of the trends by adding a loess fit line to the panel.
+
+```{r,echo=TRUE}
+ggplot(data = Batting_early_top10, aes(x = career.year,
+                                       y = HR/AB)) + geom_point() + 
+    facet_wrap(~playerID, ncol = 3) + geom_smooth()
+```
+
+Analyze the career power features for late players:
+
+```{r,echo=TRUE}
+Batting_late_top10 <- subset(Batting_late, 
+                             playerID %in% top10_HR_hitters_late)
+
+head(Batting_late_top10, n = 2)
+```
+
+
+
+```{r,echo=TRUE}
+ggplot(data = Batting_late_top10, aes(x = career.year, 
+                                      y = HR/AB)) + geom_point() + 
+    facet_wrap(~playerID, ncol = 3) + geom_smooth()
+```
+
+In most players their skills declined after about 10-12 years or stayed flat. Also, they tend to climb to a plateau early (7-8 years). Steep linear power growth for 10 years and late decline in skills is characteristic of players significantly associated with steroid use (Barry Bonds, Mark McGwyer, Sammy Sosa). We don't see the same picture in Alex Rodriguez.
+
